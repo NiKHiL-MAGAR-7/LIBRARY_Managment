@@ -23,7 +23,9 @@ ENV/
 # Environment / Secrets
 # ──────────────────────────────────────────
 .env
-.env.*
+.env.local
+.env.*.local
+# .env.example is intentionally tracked (safe template)
 config.ini
 secrets.yml
 

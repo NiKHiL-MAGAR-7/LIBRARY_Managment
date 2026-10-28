@@ -24,10 +24,11 @@
 
 This project implements a **Library Management System** that allows a college library to:
 
-- Maintain a catalogue of books (with stock levels)
+- Maintain a catalogue of books (with live stock levels)
 - Register students
-- Issue books to students and track due status
-- Process book returns
+- Issue books with a **14-day due date** and track overdue status automatically
+- Process book returns with late-return detection
+- Search books by title or author
 
 It ships as **two interfaces**:
 
@@ -41,13 +42,15 @@ It ships as **two interfaces**:
 ## Features
 
 - View all books with real-time availability status
+- **Search books** by title or author keyword
 - Add new books to the catalogue
 - Register students (duplicate email detection)
-- Issue books — prevents double-issuing and out-of-stock issues
-- Return books — updates stock automatically
-- View all currently issued / overdue books with days-out counter
+- Issue books — 14-day due date assigned automatically; prevents double-issuing and out-of-stock issues
+- Return books — detects late returns and shows how many days overdue
+- **Auto-mark overdue** — any book past its due date is automatically flagged `Overdue` when viewing issued books
+- View all currently issued / overdue books with days-left counter
+- Credentials loaded securely from a `.env` file (never hardcoded)
 - Parameterised SQL queries (safe from SQL injection)
-- Responsive web dashboard with sidebar navigation (localStorage demo)
 
 ---
 
@@ -58,10 +61,13 @@ LIBRARY_Managment/
 ├── library.py                    # Python CLI application (MySQL backend)
 ├── library_management_system.sql # Full DB schema + seed data + sample queries
 ├── requirements.txt              # Python dependencies
+├── .env.example                  # Template — copy to .env and add your credentials
 ├── web/
 │   ├── index.html                # Web dashboard
 │   ├── style.css                 # Styling
 │   └── script.js                 # Frontend logic (localStorage)
+├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
@@ -74,6 +80,7 @@ LIBRARY_Managment/
 | Language | Python 3.8+ |
 | Database | MySQL 8.0+ |
 | DB Driver | `mysql-connector-python` |
+| Config | `python-dotenv` |
 | Web UI | Vanilla HTML5, CSS3, JavaScript (ES6+) |
 | Storage (Web) | Browser `localStorage` |
 
@@ -84,7 +91,7 @@ LIBRARY_Managment/
 ### Prerequisites
 
 - MySQL 8.0+ installed and running
-- A MySQL user with CREATE DATABASE privileges (default: `root`)
+- A MySQL user with CREATE DATABASE privileges
 
 ### 1. Import the schema
 
@@ -94,23 +101,26 @@ mysql -u root -p < library_management_system.sql
 
 This will:
 1. Drop and recreate `library_db`
-2. Create the `Books`, `Students`, and `Issues` tables
+2. Create `Books`, `Students`, and `Issues` tables (with `due_date` column)
 3. Seed sample books, students, and issue records
+4. Auto-mark any seed records past their due date as `Overdue`
 
-### 2. Configure your credentials
+### 2. Set up your credentials
 
-Open `library.py` and update the connection block with your MySQL credentials:
-
-```python
-conn = mysql.connector.connect(
-    host     = "localhost",
-    user     = "root",
-    password = "YOUR_PASSWORD",   # change this
-    database = "library_db"
-)
+```bash
+cp .env.example .env
 ```
 
-> **Tip:** For production use, store credentials in a `.env` file and load them with `python-dotenv`. The `.gitignore` already excludes `.env` files.
+Open `.env` and fill in your MySQL details:
+
+```env
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=your_actual_password
+DB_NAME=library_db
+```
+
+> The `.env` file is listed in `.gitignore` and will **never** be pushed to GitHub.
 
 ---
 
@@ -119,7 +129,7 @@ conn = mysql.connector.connect(
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/LIBRARY_Managment.git
+git clone https://github.com/NiKHiL-MAGAR-7/LIBRARY_Managment.git
 cd LIBRARY_Managment
 ```
 
@@ -142,12 +152,13 @@ You will see an interactive menu:
          LIBRARY MANAGEMENT SYSTEM
 ------------------------------------------------------------
    1.  View All Books
-   2.  Add a New Book
-   3.  Register a Student
-   4.  Issue a Book
-   5.  Return a Book
-   6.  View Currently Issued Books
-   7.  Exit
+   2.  Search Books
+   3.  Add a New Book
+   4.  Register a Student
+   5.  Issue a Book
+   6.  Return a Book
+   7.  View Issued / Overdue Books
+   8.  Exit
 ------------------------------------------------------------
 ```
 
@@ -202,8 +213,9 @@ Or simply drag `web/index.html` into any browser — no server required.
 | `student_id` | INT (FK) | References Students |
 | `book_id` | INT (FK) | References Books |
 | `issue_date` | DATE | When issued |
-| `return_date` | DATE | NULL if not returned |
-| `status` | ENUM | Issued / Returned / Overdue |
+| `due_date` | DATE | Return deadline (issue_date + 14 days) |
+| `return_date` | DATE | NULL if not yet returned |
+| `status` | ENUM | `Issued` / `Returned` / `Overdue` |
 
 **Foreign key cascades:** deleting a student or book cascades to `Issues`.
 

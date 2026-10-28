@@ -1,21 +1,29 @@
+import os
 import mysql.connector
 from mysql.connector import Error
-from datetime import date
+from datetime import date, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Number of days a student can keep a book before it becomes overdue
+DUE_DAYS = 14
 
 
 def get_connection():
     """Create and return a connection to the library_db database."""
     try:
         conn = mysql.connector.connect(
-            host     = "localhost",      
-            user     = "root",          
-            password = "YOUR_PASSWORD",               
-            database = "library_db"      
+            host     = os.getenv("DB_HOST", "localhost"),
+            user     = os.getenv("DB_USER", "root"),
+            password = os.getenv("DB_PASSWORD", ""),
+            database = os.getenv("DB_NAME", "library_db")
         )
         return conn
     except Error as e:
         print(f"\n  [ERROR] Could not connect to database: {e}")
-        print("  Make sure MySQL is running and your password is correct.\n")
+        print("  Make sure MySQL is running and check your .env credentials.\n")
         return None
 
 
@@ -40,13 +48,11 @@ def print_table(headers, rows):
         print("  (No records found)")
         return
 
-    
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, val in enumerate(row):
             col_widths[i] = max(col_widths[i], len(str(val) if val is not None else "NULL"))
 
-    
     fmt = "  " + "  ".join(f"{{:<{w}}}" for w in col_widths)
 
     # Print header
@@ -61,6 +67,26 @@ def print_table(headers, rows):
 
     print_separator()
     print(f"  Total records: {len(rows)}")
+
+
+# ============================================================
+# AUTO-MARK OVERDUE BOOKS
+# ============================================================
+
+def mark_overdue(conn):
+    """Automatically mark any issued books past their due date as Overdue."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE Issues
+            SET status = 'Overdue'
+            WHERE status = 'Issued'
+              AND due_date < CURDATE()
+        """)
+        conn.commit()
+        cursor.close()
+    except Error as e:
+        print(f"  [WARN] Could not update overdue statuses: {e}")
 
 
 # ============================================================
@@ -91,7 +117,39 @@ def view_books(conn):
 
 
 # ============================================================
-# OPTION 2: ADD A BOOK
+# OPTION 2: SEARCH BOOKS
+# ============================================================
+
+def search_books(conn):
+    """Search books by title or author keyword."""
+    print_header("🔍  SEARCH BOOKS")
+    keyword = input("  Enter title or author to search: ").strip()
+    if not keyword:
+        print("  [ERROR] Search term cannot be empty.")
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                book_id,
+                title,
+                author,
+                quantity,
+                CASE WHEN quantity > 0 THEN 'Available' ELSE 'Not Available' END AS availability
+            FROM Books
+            WHERE title LIKE %s OR author LIKE %s
+            ORDER BY book_id
+        """, (f"%{keyword}%", f"%{keyword}%"))
+        rows = cursor.fetchall()
+        headers = ["Book ID", "Title", "Author", "Qty", "Status"]
+        print_table(headers, rows)
+        cursor.close()
+    except Error as e:
+        print(f"  [ERROR] {e}")
+
+
+# ============================================================
+# OPTION 3: ADD A BOOK
 # ============================================================
 
 def add_book(conn):
@@ -125,7 +183,7 @@ def add_book(conn):
 
 
 # ============================================================
-# OPTION 3: REGISTER A STUDENT
+# OPTION 4: REGISTER A STUDENT
 # ============================================================
 
 def register_student(conn):
@@ -165,7 +223,7 @@ def register_student(conn):
 
 
 # ============================================================
-# OPTION 4: ISSUE A BOOK
+# OPTION 5: ISSUE A BOOK
 # ============================================================
 
 def issue_book(conn):
@@ -207,16 +265,15 @@ def issue_book(conn):
 
         book_title, quantity = book
 
-        
         if quantity <= 0:
             print(f"  [ERROR] '{book_title}' is currently out of stock.")
             cursor.close()
             return
 
-       
+        # ── Check for existing active issue ───────────────────
         cursor.execute("""
             SELECT issue_id FROM Issues
-            WHERE student_id = %s AND book_id = %s AND status = 'Issued'
+            WHERE student_id = %s AND book_id = %s AND status IN ('Issued', 'Overdue')
         """, (student_id, book_id))
         if cursor.fetchone():
             print(f"  [ERROR] Student '{student[0]}' already has '{book_title}' issued.")
@@ -224,11 +281,13 @@ def issue_book(conn):
             return
 
         # ── Insert Issue Record ───────────────────────────────
-        today = date.today()
+        today    = date.today()
+        due_date = today + timedelta(days=DUE_DAYS)
+
         cursor.execute("""
-            INSERT INTO Issues (student_id, book_id, issue_date, status)
-            VALUES (%s, %s, %s, 'Issued')
-        """, (student_id, book_id, today))
+            INSERT INTO Issues (student_id, book_id, issue_date, due_date, status)
+            VALUES (%s, %s, %s, %s, 'Issued')
+        """, (student_id, book_id, today, due_date))
 
         # ── Decrease Book Quantity ────────────────────────────
         cursor.execute(
@@ -238,14 +297,15 @@ def issue_book(conn):
 
         conn.commit()
         print(f"\n  [SUCCESS] '{book_title}' issued to '{student[0]}' on {today}.")
-        print(f"            Issue ID: {cursor.lastrowid}")
+        print(f"            Due Date : {due_date}   (return within {DUE_DAYS} days)")
+        print(f"            Issue ID : {cursor.lastrowid}")
         cursor.close()
     except Error as e:
         print(f"  [ERROR] {e}")
 
 
 # ============================================================
-# OPTION 5: RETURN A BOOK
+# OPTION 6: RETURN A BOOK
 # ============================================================
 
 def return_book(conn):
@@ -265,7 +325,7 @@ def return_book(conn):
 
         # ── Fetch the Issue Record ────────────────────────────
         cursor.execute("""
-            SELECT i.issue_id, s.name, b.title, b.book_id, i.status, i.issue_date
+            SELECT i.issue_id, s.name, b.title, b.book_id, i.status, i.issue_date, i.due_date
             FROM Issues i
             JOIN Students s ON i.student_id = s.student_id
             JOIN Books    b ON i.book_id    = b.book_id
@@ -278,7 +338,7 @@ def return_book(conn):
             cursor.close()
             return
 
-        rec_issue_id, student_name, book_title, book_id, status, issue_date = record
+        rec_issue_id, student_name, book_title, book_id, status, issue_date, due_date = record
 
         # ── Prevent Double Return ─────────────────────────────
         if status == 'Returned':
@@ -301,20 +361,30 @@ def return_book(conn):
         )
 
         conn.commit()
+
+        late = today > due_date
         print(f"\n  [SUCCESS] '{book_title}' returned by '{student_name}' on {today}.")
-        print(f"            Issued on: {issue_date}  |  Returned on: {today}")
+        print(f"            Issued: {issue_date}  |  Due: {due_date}  |  Returned: {today}")
+        if late:
+            days_late = (today - due_date).days
+            print(f"  [NOTICE]  Book was returned {days_late} day(s) late.")
+        else:
+            print(f"  [NOTICE]  Book returned on time. Thank you!")
         cursor.close()
     except Error as e:
         print(f"  [ERROR] {e}")
 
 
 # ============================================================
-# OPTION 6: VIEW ISSUED BOOKS
+# OPTION 7: VIEW ISSUED / OVERDUE BOOKS
 # ============================================================
 
 def view_issued_books(conn):
-    """Show all books that are currently issued (not yet returned)."""
-    print_header("📋  CURRENTLY ISSUED BOOKS")
+    """Show all books that are currently issued (not yet returned), auto-marking overdue."""
+    # Auto-mark any books that are past their due date
+    mark_overdue(conn)
+
+    print_header("📋  CURRENTLY ISSUED / OVERDUE BOOKS")
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -325,17 +395,18 @@ def view_issued_books(conn):
                 b.book_id,
                 b.title         AS book_title,
                 i.issue_date,
+                i.due_date,
                 i.status,
-                DATEDIFF(CURDATE(), i.issue_date) AS days_since_issue
+                DATEDIFF(i.due_date, CURDATE()) AS days_left
             FROM Issues i
             JOIN Students s ON i.student_id = s.student_id
             JOIN Books    b ON i.book_id    = b.book_id
             WHERE i.status IN ('Issued', 'Overdue')
-            ORDER BY i.issue_date ASC
+            ORDER BY i.due_date ASC
         """)
         rows = cursor.fetchall()
         headers = ["Issue ID", "Stu ID", "Student Name", "Book ID", "Book Title",
-                   "Issue Date", "Status", "Days Out"]
+                   "Issue Date", "Due Date", "Status", "Days Left"]
         print_table(headers, rows)
         cursor.close()
     except Error as e:
@@ -353,12 +424,13 @@ def print_menu():
     print("         📖  LIBRARY MANAGEMENT SYSTEM")
     print_separator("─")
     print("   1.  View All Books")
-    print("   2.  Add a New Book")
-    print("   3.  Register a Student")
-    print("   4.  Issue a Book")
-    print("   5.  Return a Book")
-    print("   6.  View Currently Issued Books")
-    print("   7.  Exit")
+    print("   2.  Search Books")
+    print("   3.  Add a New Book")
+    print("   4.  Register a Student")
+    print("   5.  Issue a Book")
+    print("   6.  Return a Book")
+    print("   7.  View Issued / Overdue Books")
+    print("   8.  Exit")
     print_separator("─")
 
 
@@ -369,33 +441,35 @@ def main():
     conn = get_connection()
 
     if conn is None:
-        print("  Exiting. Fix the connection settings and try again.")
+        print("  Exiting. Fix the connection settings in your .env file and try again.")
         return
 
     print("  Connected successfully!\n")
 
     while True:
         print_menu()
-        choice = input("  Enter your choice (1-7): ").strip()
+        choice = input("  Enter your choice (1-8): ").strip()
 
         if   choice == "1":
             view_books(conn)
         elif choice == "2":
-            add_book(conn)
+            search_books(conn)
         elif choice == "3":
-            register_student(conn)
+            add_book(conn)
         elif choice == "4":
-            issue_book(conn)
+            register_student(conn)
         elif choice == "5":
-            return_book(conn)
+            issue_book(conn)
         elif choice == "6":
-            view_issued_books(conn)
+            return_book(conn)
         elif choice == "7":
+            view_issued_books(conn)
+        elif choice == "8":
             print("\n  Goodbye! Closing connection.\n")
             conn.close()
             break
         else:
-            print("  [ERROR] Invalid choice. Please enter a number between 1 and 7.")
+            print("  [ERROR] Invalid choice. Please enter a number between 1 and 8.")
 
         input("\n  Press Enter to continue...")
 
